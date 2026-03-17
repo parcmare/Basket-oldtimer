@@ -1,18 +1,18 @@
 const express = require('express')
-const sqlite3 = require('sqlite3').verbose()
+const Database = require('better-sqlite3')
 const nodemailer = require('nodemailer')
 const Table = require('cli-table3')
 
 const app = express()
-const PORT = 3000
+const PORT = process.env.PORT || 3000
 
 app.use(express.json())
 
 // DATABASE
-const db = new sqlite3.Database('./players.db')
+const db = new Database('./players.db')
 
 // CREATE TABLE
-db.run(`
+db.prepare(`
 CREATE TABLE IF NOT EXISTS players (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 name TEXT,
@@ -20,150 +20,132 @@ email TEXT UNIQUE,
 paid INTEGER DEFAULT 0,
 games INTEGER DEFAULT 0
 )
-`)
+`).run()
 
 // Nodemailer transporter
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
-    user: 'paremarc911@gmail.com',
-    pass: 'ioypwjfeodverrus'
+    user: 'paremarc911@gmail.com',      // ton email Gmail
+    pass: 'ioypwjfeodverrus'            // mot de passe d'application Gmail
   }
 })
 
 // GET PLAYERS
 app.get('/players', (req, res) => {
-  db.all("SELECT * FROM players", [], (err, rows) => {
-    if(err) return res.status(500).json(err)
-    res.json(rows)
-  })
+  const rows = db.prepare("SELECT * FROM players").all()
+  res.json(rows)
 })
 
 // ADD PLAYER
 app.post('/players', (req,res)=>{
   const { name, email } = req.body
 
-  db.all("SELECT COUNT(*) AS count FROM players WHERE paid=1", [], (err, rows) => {
-    if(err) return res.status(500).json(err)
+  const countPaid = db.prepare("SELECT COUNT(*) AS count FROM players WHERE paid=1").get().count
+  const paidValue = countPaid < 2 ? 1 : 0
+  const stmt = db.prepare("INSERT INTO players (name,email,paid,games) VALUES (?,?,?,0)")
 
-    const paidValue = rows[0].count < 2 ? 1 : 0 // max 2 en match
-    const sql = `INSERT INTO players (name,email,paid,games) VALUES (?,?,?,0)`
+  try{
+    const info = stmt.run(name,email,paidValue)
 
-    db.run(sql,[name,email,paidValue], function(err){
-      if(err) return res.status(500).json(err)
-
-      // Envoi email automatique
-      const mailOptions = {
-        from: 'paremarc911@gmail.com',
-        to: email,
-        subject: 'Bienvenue au Basket OldTimer!',
-        text: `Salut ${name},\n\nTu as été ajouté à la ligue Basket OldTimer.\nStatut: ${paidValue === 1 ? "EN MATCH" : "LISTE D'ATTENTE"}.\n\nAmuse-toi bien !`
-      }
-
-      transporter.sendMail(mailOptions,(error, info)=>{
-        if(error) console.log("Erreur email:", error)
-        else console.log('Email envoyé:', info.response)
-      })
-
-      res.json({
-        id:this.lastID,
-        name,
-        email,
-        paid: paidValue === 1 ? "EN MATCH" : "LISTE D'ATTENTE"
-      })
+    // Email ajout
+    const mailOptions = {
+      from: 'paremarc911@gmail.com',
+      to: email,
+      subject: 'Bienvenue au Basket OldTimer!',
+      text: `Salut ${name},\n\nTu as été ajouté à la ligue Basket OldTimer.\nStatut: ${paidValue === 1 ? "EN MATCH" : "LISTE D'ATTENTE"}.\n\nAmuse-toi bien !`
+    }
+    transporter.sendMail(mailOptions,(error,info)=>{
+      if(error) console.log("Erreur email:", error)
+      else console.log('Email envoyé:', info.response)
     })
-  })
+
+    res.json({
+      id: info.lastInsertRowid,
+      name,
+      email,
+      paid: paidValue === 1 ? "EN MATCH" : "LISTE D'ATTENTE"
+    })
+
+  }catch(err){
+    res.status(500).json(err)
+  }
 })
 
 // DELETE PLAYER
 app.delete('/players/:id', (req,res)=>{
   const { id } = req.params
+  const player = db.prepare("SELECT name,email,paid FROM players WHERE id=?").get(id)
+  if(!player) return res.status(404).json({message:"Joueur non trouvé"})
 
-  // Récupérer le joueur avant suppression
-  db.get("SELECT name,email FROM players WHERE id=?", [id], (err, player)=>{
-    if(err) return res.status(500).json(err)
-    if(!player) return res.status(404).json({message:"Joueur non trouvé"})
+  db.prepare("DELETE FROM players WHERE id=?").run(id)
 
-    db.run("DELETE FROM players WHERE id=?", [id], function(err){
-      if(err) return res.status(500).json(err)
-
-      // Email suppression
-      const mailOptions = {
-        from: 'paremarc911@gmail.com',
-        to: player.email,
-        subject: 'Confirmation de suppression',
-        text: `Salut ${player.name},\n\nTu as été supprimé de la ligue Basket OldTimer.\n\nÀ bientôt !`
-      }
-      transporter.sendMail(mailOptions,(error,info)=>{
-        if(error) console.log("Erreur email:", error)
-        else console.log('Email de suppression envoyé:', info.response)
-      })
-
-      // Passer joueur en match si possible
-      db.get("SELECT COUNT(*) AS count FROM players WHERE paid=1", [], (err,row)=>{
-        if(!err && row.count < 2){
-          db.get("SELECT id FROM players WHERE paid=0 ORDER BY id ASC LIMIT 1", [], (err,nextPlayer)=>{
-            if(!err && nextPlayer){
-              db.run("UPDATE players SET paid=1 WHERE id=?", [nextPlayer.id])
-              // Email joueur passé en match
-              db.get("SELECT name,email FROM players WHERE id=?", [nextPlayer.id], (err, playerNext)=>{
-                if(!err && playerNext){
-                  const mailOptionsNext = {
-                    from: 'paremarc911@gmail.com',
-                    to: playerNext.email,
-                    subject: 'Tu es passé en match !',
-                    text: `Salut ${playerNext.name},\n\nTu es maintenant EN MATCH dans la ligue Basket OldTimer !`
-                  }
-                  transporter.sendMail(mailOptionsNext,(error,info)=>{
-                    if(error) console.log("Erreur email:", error)
-                    else console.log('Email envoyé pour passage en match:', info.response)
-                  })
-                }
-              })
-            }
-          })
-        }
-      })
-
-      res.json({message:"Joueur supprimé"})
-    })
+  // Email suppression
+  const mailOptions = {
+    from: 'paremarc911@gmail.com',
+    to: player.email,
+    subject: 'Confirmation de suppression',
+    text: `Salut ${player.name},\n\nTu as été supprimé de la ligue Basket OldTimer.\n\nÀ bientôt !`
+  }
+  transporter.sendMail(mailOptions,(error,info)=>{
+    if(error) console.log("Erreur email:", error)
+    else console.log('Email de suppression envoyé:', info.response)
   })
+
+  // Rotation automatique
+  const countPaid = db.prepare("SELECT COUNT(*) AS count FROM players WHERE paid=1").get().count
+  if(countPaid < 2){
+    const nextPlayer = db.prepare("SELECT id,name,email FROM players WHERE paid=0 ORDER BY id ASC LIMIT 1").get()
+    if(nextPlayer){
+      db.prepare("UPDATE players SET paid=1 WHERE id=?").run(nextPlayer.id)
+
+      // Email passage en match
+      const mailNext = {
+        from:'paremarc911@gmail.com',
+        to: nextPlayer.email,
+        subject:'Tu es passé en match !',
+        text:`Salut ${nextPlayer.name},\n\nTu es maintenant EN MATCH dans la ligue Basket OldTimer !`
+      }
+      transporter.sendMail(mailNext,(error,info)=>{
+        if(error) console.log("Erreur email:", error)
+        else console.log('Email passage en match:', info.response)
+      })
+    }
+  }
+
+  res.json({message:"Joueur supprimé"})
 })
 
 // RESET TABLE
 app.get('/reset', (req,res)=>{
-  db.run("DELETE FROM players", [], function(err){
-    if(err) return res.status(500).json(err)
-    res.json({message:"Table players réinitialisée"})
-  })
+  db.prepare("DELETE FROM players").run()
+  res.json({message:"Table players réinitialisée"})
 })
 
 // TABLEAU CLI
 app.get('/players-table', (req,res)=>{
-  db.all("SELECT * FROM players ORDER BY paid DESC,id ASC", [], (err,rows)=>{
-    if(err) return res.status(400).send("Erreur base de données")
+  const rows = db.prepare("SELECT * FROM players ORDER BY paid DESC,id ASC").all()
 
-    const table = new Table({
-      head:['ID','Nom','Email','Jeu'],
-      colWidths:[5,20,30,15]
-    })
-
-    rows.forEach(player=>{
-      table.push([
-        player.id,
-        player.name,
-        player.email,
-        player.paid===1?'EN MATCH':'EN ATTENTE'
-      ])
-    })
-
-    console.log(table.toString())
-    res.send('<pre>'+table.toString()+'</pre>')
+  const table = new Table({
+    head:['ID','Nom','Email','Jeu'],
+    colWidths:[5,20,30,15]
   })
+
+  rows.forEach(player=>{
+    table.push([
+      player.id,
+      player.name,
+      player.email,
+      player.paid===1?'EN MATCH':'EN ATTENTE'
+    ])
+  })
+
+  console.log(table.toString())
+  res.send('<pre>'+table.toString()+'</pre>')
 })
 
-// DASHBOARD WEB (look original, champs se vident après ajout)
-app.get('/dashboard', (req,res)=>{
+// DASHBOARD WEB
+app.get('/dashboard',(req,res)=>{
   res.send(`
 <html>
 <head>
@@ -220,7 +202,6 @@ method:'POST',
 headers:{'Content-Type':'application/json'},
 body:JSON.stringify({name,email})
 })
-// vider les champs
 document.getElementById('name').value=''
 document.getElementById('email').value=''
 loadPlayers()
@@ -229,8 +210,10 @@ loadPlayers()
 </script>
 </body>
 </html>
-`)
-})
+`)})
+
+// REDIRECTION / → /dashboard
+app.get('/', (req,res)=>{res.redirect('/dashboard')})
 
 // START SERVER
-app.listen(PORT,()=>{console.log('Server running on http://localhost:'+PORT)})
+app.listen(PORT,()=>{console.log('Server running on port '+PORT)})
