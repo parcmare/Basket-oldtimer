@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>OldTimer Basket</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; background-color: #f0f0f0; }
+    h1 { color: #d35400; }
+    h2 { color: #2980b9; margin-top: 30px; }
+    input { padding: 5px; margin-right: 5px; }
+    button { padding: 5px 10px; margin-right: 5px; }
+    ul { background: #fff; padding: 10px; border-radius: 5px; list-style: none; }
+    li { padding: 2px 0; }
+    .container { margin-bottom: 20px; }
+  </style>
+</head>
+<body>
+  <h1>🏀 OldTimer Basket</h1>
+
+  <div class="container">
+    <h2>Mardi</h2>
+    <input type="text" id="tuesdayName" placeholder="Nom:">
+    <button id="registerTueBtn">S'inscrire</button>
+    <button id="unregisterTueBtn">Se désinscrire</button>
+
+    <h3>Joueurs :</h3>
+    <ul id="playersListTue"></ul>
+
+    <h3>Liste d'attente :</h3>
+    <ul id="waitingListTue"></ul>
+  </div>
+
+  <div class="container">
+    <h2>Jeudi</h2>
+    <input type="text" id="thursdayName" placeholder="Nom:">
+    <button id="registerThuBtn">S'inscrire</button>
+    <button id="unregisterThuBtn">Se désinscrire</button>
+
+    <h3>Joueurs :</h3>
+    <ul id="playersListThu"></ul>
+
+    <h3>Liste d'attente :</h3>
+    <ul id="waitingListThu"></ul>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>

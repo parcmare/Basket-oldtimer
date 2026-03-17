@@ -1,176 +1,236 @@
-const express = require('express');
-const app = express();
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+const express = require('express')
+const sqlite3 = require('sqlite3').verbose()
+const nodemailer = require('nodemailer')
+const Table = require('cli-table3')
 
-const MAX_PLAYERS = 5;
+const app = express()
+const PORT = 3000
 
-// Listes par défaut
-let playersTuesday = [
-  { name: "Jean", games: 1, paid: true },
-  { name: "Paul", games: 1, paid: true }
-];
-let waitingTuesday = [
-  { name: "Pierre", games: 1, paid: true }
-];
+app.use(express.json())
 
-let playersThursday = [
-  { name: "Alice", games: 1, paid: true },
-  { name: "Bob", games: 1, paid: true }
-];
-let waitingThursday = [
-  { name: "Charlie", games: 1, paid: true }
-];
+// DATABASE
+const db = new sqlite3.Database('./players.db')
 
-// Fonction inscription avec vérification doublon
-function register(players, waiting, name) {
-  const exists = players.some(p => p.name === name) || waiting.some(p => p.name === name);
-  if (exists) return "⚠️ Vous êtes déjà inscrit pour cette journée";
+// CREATE TABLE
+db.run(`
+CREATE TABLE IF NOT EXISTS players (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+name TEXT,
+email TEXT UNIQUE,
+paid INTEGER DEFAULT 0,
+games INTEGER DEFAULT 0
+)
+`)
 
-  const player = { name: name, games: 1, paid: true };
-  if (players.length < MAX_PLAYERS) {
-    players.push(player);
-    return "🏀 Inscription confirmée";
-  } else {
-    waiting.push(player);
-    return "⏳ Ajouté à la liste d'attente";
+// Nodemailer transporter
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: 'paremarc911@gmail.com',
+    pass: 'ioypwjfeodverrus'
   }
-}
+})
 
-// Inscription
-app.post('/register', (req, res) => {
-  const { name, day } = req.body;
-  if (day === "Tuesday") return res.json({ message: register(playersTuesday, waitingTuesday, name) });
-  if (day === "Thursday") return res.json({ message: register(playersThursday, waitingThursday, name) });
-  res.json({ message: "Jour invalide" });
-});
+// GET PLAYERS
+app.get('/players', (req, res) => {
+  db.all("SELECT * FROM players", [], (err, rows) => {
+    if(err) return res.status(500).json(err)
+    res.json(rows)
+  })
+})
 
-// Désinscription
-app.post('/unsubscribe', (req, res) => {
-  const { name, day } = req.body;
-  let players, waiting;
-  if (day === "Tuesday") { players = playersTuesday; waiting = waitingTuesday; }
-  else if (day === "Thursday") { players = playersThursday; waiting = waitingThursday; }
-  else return res.json({ message: "Jour invalide" });
+// ADD PLAYER
+app.post('/players', (req,res)=>{
+  const { name, email } = req.body
 
-  players = players.filter(p => p.name !== name);
-  if (waiting.length > 0) {
-    const promoted = waiting.shift();
-    players.push(promoted);
-  }
+  db.all("SELECT COUNT(*) AS count FROM players WHERE paid=1", [], (err, rows) => {
+    if(err) return res.status(500).json(err)
 
-  if (day === "Tuesday") { playersTuesday = players; waitingTuesday = waiting; }
-  if (day === "Thursday") { playersThursday = players; waitingThursday = waiting; }
+    const paidValue = rows[0].count < 2 ? 1 : 0 // max 2 en match
+    const sql = `INSERT INTO players (name,email,paid,games) VALUES (?,?,?,0)`
 
-  res.json({ message: "Désinscription effectuée" });
-});
+    db.run(sql,[name,email,paidValue], function(err){
+      if(err) return res.status(500).json(err)
 
-// Routes GET pour listes
-app.get('/players/:day', (req, res) => {
-  if (req.params.day === "Tuesday") return res.json(playersTuesday);
-  if (req.params.day === "Thursday") return res.json(playersThursday);
-  res.json({ message: "Jour invalide" });
-});
-app.get('/waiting/:day', (req, res) => {
-  if (req.params.day === "Tuesday") return res.json(waitingTuesday);
-  if (req.params.day === "Thursday") return res.json(waitingThursday);
-  res.json({ message: "Jour invalide" });
-});
+      // Envoi email automatique
+      const mailOptions = {
+        from: 'paremarc911@gmail.com',
+        to: email,
+        subject: 'Bienvenue au Basket OldTimer!',
+        text: `Salut ${name},\n\nTu as été ajouté à la ligue Basket OldTimer.\nStatut: ${paidValue === 1 ? "EN MATCH" : "LISTE D'ATTENTE"}.\n\nAmuse-toi bien !`
+      }
 
-// Page web avec formulaires et alertes
-app.get('/', (req, res) => {
+      transporter.sendMail(mailOptions,(error, info)=>{
+        if(error) console.log("Erreur email:", error)
+        else console.log('Email envoyé:', info.response)
+      })
+
+      res.json({
+        id:this.lastID,
+        name,
+        email,
+        paid: paidValue === 1 ? "EN MATCH" : "LISTE D'ATTENTE"
+      })
+    })
+  })
+})
+
+// DELETE PLAYER
+app.delete('/players/:id', (req,res)=>{
+  const { id } = req.params
+
+  // Récupérer le joueur avant suppression
+  db.get("SELECT name,email FROM players WHERE id=?", [id], (err, player)=>{
+    if(err) return res.status(500).json(err)
+    if(!player) return res.status(404).json({message:"Joueur non trouvé"})
+
+    db.run("DELETE FROM players WHERE id=?", [id], function(err){
+      if(err) return res.status(500).json(err)
+
+      // Email suppression
+      const mailOptions = {
+        from: 'paremarc911@gmail.com',
+        to: player.email,
+        subject: 'Confirmation de suppression',
+        text: `Salut ${player.name},\n\nTu as été supprimé de la ligue Basket OldTimer.\n\nÀ bientôt !`
+      }
+      transporter.sendMail(mailOptions,(error,info)=>{
+        if(error) console.log("Erreur email:", error)
+        else console.log('Email de suppression envoyé:', info.response)
+      })
+
+      // Passer joueur en match si possible
+      db.get("SELECT COUNT(*) AS count FROM players WHERE paid=1", [], (err,row)=>{
+        if(!err && row.count < 2){
+          db.get("SELECT id FROM players WHERE paid=0 ORDER BY id ASC LIMIT 1", [], (err,nextPlayer)=>{
+            if(!err && nextPlayer){
+              db.run("UPDATE players SET paid=1 WHERE id=?", [nextPlayer.id])
+              // Email joueur passé en match
+              db.get("SELECT name,email FROM players WHERE id=?", [nextPlayer.id], (err, playerNext)=>{
+                if(!err && playerNext){
+                  const mailOptionsNext = {
+                    from: 'paremarc911@gmail.com',
+                    to: playerNext.email,
+                    subject: 'Tu es passé en match !',
+                    text: `Salut ${playerNext.name},\n\nTu es maintenant EN MATCH dans la ligue Basket OldTimer !`
+                  }
+                  transporter.sendMail(mailOptionsNext,(error,info)=>{
+                    if(error) console.log("Erreur email:", error)
+                    else console.log('Email envoyé pour passage en match:', info.response)
+                  })
+                }
+              })
+            }
+          })
+        }
+      })
+
+      res.json({message:"Joueur supprimé"})
+    })
+  })
+})
+
+// RESET TABLE
+app.get('/reset', (req,res)=>{
+  db.run("DELETE FROM players", [], function(err){
+    if(err) return res.status(500).json(err)
+    res.json({message:"Table players réinitialisée"})
+  })
+})
+
+// TABLEAU CLI
+app.get('/players-table', (req,res)=>{
+  db.all("SELECT * FROM players ORDER BY paid DESC,id ASC", [], (err,rows)=>{
+    if(err) return res.status(400).send("Erreur base de données")
+
+    const table = new Table({
+      head:['ID','Nom','Email','Jeu'],
+      colWidths:[5,20,30,15]
+    })
+
+    rows.forEach(player=>{
+      table.push([
+        player.id,
+        player.name,
+        player.email,
+        player.paid===1?'EN MATCH':'EN ATTENTE'
+      ])
+    })
+
+    console.log(table.toString())
+    res.send('<pre>'+table.toString()+'</pre>')
+  })
+})
+
+// DASHBOARD WEB (look original, champs se vident après ajout)
+app.get('/dashboard', (req,res)=>{
   res.send(`
-<!DOCTYPE html>
-<html lang="fr">
+<html>
 <head>
-<meta charset="UTF-8">
-<title>OldTimer Basket</title>
+<title>Basket OldTimer Dashboard</title>
 <style>
-body { font-family: Arial; max-width: 600px; margin: 20px auto; background: #f4f4f4; padding: 20px; border-radius: 10px; }
-h1 { color: #ff4500; text-align: center; }
-h2 { color: #333; margin-top: 30px; }
-form { margin-bottom: 10px; }
-input[type="text"] { padding: 5px; margin-right: 5px; }
-button { padding: 5px 10px; background: #ff4500; color: white; border: none; border-radius: 5px; cursor: pointer; }
-button:hover { background: #e03e00; }
-#alert { padding: 10px; margin-bottom: 10px; border-radius: 5px; display: none; font-weight: bold; }
-ul.main { background: #d4edda; padding: 10px; border-radius: 5px; }
-ul.waiting { background: #fff3cd; padding: 10px; border-radius: 5px; }
-li { margin: 3px 0; }
+body{font-family:Arial;background:#f4f4f4;text-align:center}
+table{border-collapse:collapse;margin:auto;background:white}
+th,td{padding:10px 20px;border:1px solid #ccc}
+th{background:#333;color:white}
+button{padding:6px 10px;cursor:pointer}
+form{margin-bottom:20px}
 </style>
 </head>
 <body>
-<div id="alert"></div>
-<h1>🏀 OldTimer Basket</h1>
-
-<div class="section">
-  <h2>Mardi</h2>
-  <form onsubmit="submitForm(event,'Tuesday','register')">
-    Nom: <input name="name" id="nameTuesday" required>
-    <button type="submit">S'inscrire</button>
-  </form>
-  <form onsubmit="submitForm(event,'Tuesday','unsubscribe')">
-    Nom: <input name="name" id="unsubTuesday" required>
-    <button type="submit">Se désinscrire</button>
-  </form>
-  <h3>Joueurs :</h3>
-  <ul id="playersTuesday" class="main"></ul>
-  <h3>Liste d'attente :</h3>
-  <ul id="waitingTuesday" class="waiting"></ul>
-</div>
-
-<div class="section">
-  <h2>Jeudi</h2>
-  <form onsubmit="submitForm(event,'Thursday','register')">
-    Nom: <input name="name" id="nameThursday" required>
-    <button type="submit">S'inscrire</button>
-  </form>
-  <form onsubmit="submitForm(event,'Thursday','unsubscribe')">
-    Nom: <input name="name" id="unsubThursday" required>
-    <button type="submit">Se désinscrire</button>
-  </form>
-  <h3>Joueurs :</h3>
-  <ul id="playersThursday" class="main"></ul>
-  <h3>Liste d'attente :</h3>
-  <ul id="waitingThursday" class="waiting"></ul>
-</div>
-
+<h1>Basket OldTimer Dashboard</h1>
+<form id="playerForm">
+<input placeholder="Nom" id="name" required>
+<input placeholder="Email" id="email" required>
+<button type="submit">Ajouter joueur</button>
+</form>
+<table>
+<thead>
+<tr><th>ID</th><th>Nom</th><th>Email</th><th>Statut</th><th>Action</th></tr>
+</thead>
+<tbody id="players"></tbody>
+</table>
 <script>
-async function fetchLists(){
-  ['Tuesday','Thursday'].forEach(async day=>{
-    const players = await fetch('/players/'+day).then(r=>r.json());
-    const waiting = await fetch('/waiting/'+day).then(r=>r.json());
-    document.getElementById('players'+day).innerHTML = players.map(p=>'<li>'+p.name+'</li>').join('');
-    document.getElementById('waiting'+day).innerHTML = waiting.map(p=>'<li>'+p.name+'</li>').join('');
-  });
+async function loadPlayers(){
+const res=await fetch('/players')
+const players=await res.json()
+const tbody=document.getElementById('players')
+tbody.innerHTML=''
+players.forEach(p=>{
+const status=p.paid?'EN MATCH':'EN ATTENTE'
+tbody.innerHTML+=\`<tr>
+<td>\${p.id}</td>
+<td>\${p.name}</td>
+<td>\${p.email}</td>
+<td>\${status}</td>
+<td><button onclick="deletePlayer(\${p.id})">Supprimer</button></td>
+</tr>\`
+})
 }
-
-async function submitForm(event, day, action){
-  event.preventDefault();
-  const inputId = action==='register'?'name'+day:'unsub'+day;
-  const name = document.getElementById(inputId).value;
-  const response = await fetch('/'+action,{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({name,day})
-  }).then(r=>r.json());
-  document.getElementById(inputId).value='';
-  showAlert(response.message);
-  fetchLists();
+async function deletePlayer(id){
+await fetch('/players/'+id,{method:'DELETE'})
+loadPlayers()
 }
-
-function showAlert(message){
-  const alertDiv = document.getElementById('alert');
-  alertDiv.textContent = message;
-  alertDiv.style.display='block';
-  setTimeout(()=>{ alertDiv.style.display='none'; },3000);
-}
-
-fetchLists();
+document.getElementById('playerForm').addEventListener('submit',async e=>{
+e.preventDefault()
+const name=document.getElementById('name').value
+const email=document.getElementById('email').value
+await fetch('/players',{
+method:'POST',
+headers:{'Content-Type':'application/json'},
+body:JSON.stringify({name,email})
+})
+// vider les champs
+document.getElementById('name').value=''
+document.getElementById('email').value=''
+loadPlayers()
+})
+loadPlayers()
 </script>
 </body>
 </html>
-  `);
-});
+`)
+})
 
-app.listen(3000,()=>console.log("Serveur démarré sur http://localhost:3000"));
+// START SERVER
+app.listen(PORT,()=>{console.log('Server running on http://localhost:'+PORT)})
