@@ -1,3 +1,5 @@
+// server.js
+
 const express = require('express')
 const Database = require('better-sqlite3')
 const nodemailer = require('nodemailer')
@@ -7,27 +9,28 @@ const app = express()
 const PORT = process.env.PORT || 3000
 
 app.use(express.json())
+app.use(express.urlencoded({ extended: true }))
 
 // DATABASE
 const db = new Database('./players.db')
 
-// CREATE TABLE
+// CREATE TABLE IF NOT EXISTS
 db.prepare(`
 CREATE TABLE IF NOT EXISTS players (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-name TEXT,
-email TEXT UNIQUE,
-paid INTEGER DEFAULT 0,
-games INTEGER DEFAULT 0
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT,
+  email TEXT UNIQUE,
+  paid INTEGER DEFAULT 0,
+  games INTEGER DEFAULT 0
 )
 `).run()
 
-// Nodemailer transporter
+// Nodemailer transporter sécurisé
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
-    user: 'paremarc911@gmail.com',      // ton email Gmail
-    pass: 'ioypwjfeodverrus'            // mot de passe d'application Gmail
+    user: process.env.EMAIL_USER,   // depuis variables d'environnement
+    pass: process.env.EMAIL_PASS
   }
 })
 
@@ -41,6 +44,10 @@ app.get('/players', (req, res) => {
 app.post('/players', (req,res)=>{
   const { name, email } = req.body
 
+  if(!name || !email){
+    return res.status(400).json({message:"Nom et email requis"})
+  }
+
   const countPaid = db.prepare("SELECT COUNT(*) AS count FROM players WHERE paid=1").get().count
   const paidValue = countPaid < 2 ? 1 : 0
   const stmt = db.prepare("INSERT INTO players (name,email,paid,games) VALUES (?,?,?,0)")
@@ -50,7 +57,7 @@ app.post('/players', (req,res)=>{
 
     // Email ajout
     const mailOptions = {
-      from: 'paremarc911@gmail.com',
+      from: process.env.EMAIL_USER,
       to: email,
       subject: 'Bienvenue au Basket OldTimer!',
       text: `Salut ${name},\n\nTu as été ajouté à la ligue Basket OldTimer.\nStatut: ${paidValue === 1 ? "EN MATCH" : "LISTE D'ATTENTE"}.\n\nAmuse-toi bien !`
@@ -68,7 +75,10 @@ app.post('/players', (req,res)=>{
     })
 
   }catch(err){
-    res.status(500).json(err)
+    if(err.code === 'SQLITE_CONSTRAINT_UNIQUE'){
+      return res.status(400).json({message:"Email déjà utilisé"})
+    }
+    res.status(500).json({message:"Erreur serveur"})
   }
 })
 
@@ -82,7 +92,7 @@ app.delete('/players/:id', (req,res)=>{
 
   // Email suppression
   const mailOptions = {
-    from: 'paremarc911@gmail.com',
+    from: process.env.EMAIL_USER,
     to: player.email,
     subject: 'Confirmation de suppression',
     text: `Salut ${player.name},\n\nTu as été supprimé de la ligue Basket OldTimer.\n\nÀ bientôt !`
@@ -101,7 +111,7 @@ app.delete('/players/:id', (req,res)=>{
 
       // Email passage en match
       const mailNext = {
-        from:'paremarc911@gmail.com',
+        from: process.env.EMAIL_USER,
         to: nextPlayer.email,
         subject:'Tu es passé en match !',
         text:`Salut ${nextPlayer.name},\n\nTu es maintenant EN MATCH dans la ligue Basket OldTimer !`
@@ -174,38 +184,43 @@ form{margin-bottom:20px}
 </table>
 <script>
 async function loadPlayers(){
-const res=await fetch('/players')
-const players=await res.json()
-const tbody=document.getElementById('players')
-tbody.innerHTML=''
-players.forEach(p=>{
-const status=p.paid?'EN MATCH':'EN ATTENTE'
-tbody.innerHTML+=\`<tr>
+  const res=await fetch('/players')
+  const players=await res.json()
+  const tbody=document.getElementById('players')
+  tbody.innerHTML=''
+  players.forEach(p=>{
+    const status=p.paid?'EN MATCH':'EN ATTENTE'
+    tbody.innerHTML+=\`<tr>
 <td>\${p.id}</td>
 <td>\${p.name}</td>
 <td>\${p.email}</td>
 <td>\${status}</td>
 <td><button onclick="deletePlayer(\${p.id})">Supprimer</button></td>
 </tr>\`
-})
+  })
 }
+
 async function deletePlayer(id){
-await fetch('/players/'+id,{method:'DELETE'})
-loadPlayers()
+  await fetch('/players/'+id,{method:'DELETE'})
+  loadPlayers()
 }
+
 document.getElementById('playerForm').addEventListener('submit',async e=>{
-e.preventDefault()
-const name=document.getElementById('name').value
-const email=document.getElementById('email').value
-await fetch('/players',{
-method:'POST',
-headers:{'Content-Type':'application/json'},
-body:JSON.stringify({name,email})
+  e.preventDefault()
+  const name=document.getElementById('name').value
+  const email=document.getElementById('email').value
+  await fetch('/players',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name,email})
+  }).then(res=>{
+    if(!res.ok) alert("Erreur: email déjà utilisé ou invalide")
+  })
+  document.getElementById('name').value=''
+  document.getElementById('email').value=''
+  loadPlayers()
 })
-document.getElementById('name').value=''
-document.getElementById('email').value=''
-loadPlayers()
-})
+
 loadPlayers()
 </script>
 </body>
